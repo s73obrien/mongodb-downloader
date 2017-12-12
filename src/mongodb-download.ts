@@ -1,15 +1,40 @@
-const os: any = require('os');
-const http: any = require('https');
-const fs: any = require('fs-extra');
+import {
+  URL
+} from 'url';
+
+import {
+  tmpdir,
+  platform,
+  arch
+} from 'os';
+
+import {
+  get,
+  RequestOptions,
+  IncomingMessage
+} from 'http';
+
+
+import {
+  writeFileSync,
+  createReadStream,
+  createWriteStream,
+  readFileSync,
+  renameSync
+} from 'fs';
+
+import {
+  createHash
+} from 'crypto';
+
 const path: any = require('path');
 const Debug: any = require('debug');
 const getos: any = require('getos');
-const url: any = require('url');
 const decompress: any = require('decompress');
 const request: any = require('request-promise');
 const md5File: any = require('md5-file');
 
-const DOWNLOAD_URI: string = "http://downloads.mongodb.org";
+const DOWNLOAD_URI: string = "https://fastdl.mongodb.org";
 const MONGODB_VERSION: string = "latest";
 
 export interface IMongoDBDownloadOptions {
@@ -17,7 +42,7 @@ export interface IMongoDBDownloadOptions {
   arch: string;
   version: string;
   downloadDir: string;
-  http: any;
+  url: URL;
 }
 
 export interface IMongoDBDownloadProgress {
@@ -33,317 +58,179 @@ export class MongoDBDownload {
   mongoDBPlatform: MongoDBPlatform;
   downloadProgress: IMongoDBDownloadProgress;
   debug: any;
-  
-  constructor( {
-    platform = os.platform(),
-    arch = os.arch(),
-    downloadDir = os.tmpdir(),
-    version = MONGODB_VERSION,
-    http = {}
-  }) {
-    this.options = {
-      "platform": platform,
-      "arch": arch,
-      "downloadDir": downloadDir,
-      "version": version,
-      "http": http
-    };
-    
-    this.debug = Debug('mongodb-download-MongoDBDownload');
-    this.mongoDBPlatform = new MongoDBPlatform(this.getPlatform(), this.getArch());
+
+  constructor(
+    options: IMongoDBDownloadOptions = {
+      platform: platform(),
+      arch: arch(),
+      downloadDir: tmpdir(),
+      version: MONGODB_VERSION,
+      url: null
+    }
+  ) {
+    this.options = options;
     this.options.downloadDir = path.resolve(this.options.downloadDir, 'mongodb-download');
-    this.downloadProgress ={
+
+    this.debug = Debug('mongodb-download-MongoDBDownload');
+
+    this.mongoDBPlatform = new MongoDBPlatform(this.getPlatform(), this.getArch());
+
+    this.downloadProgress = {
       current: 0,
       length: 0,
       total: 0,
       lastStdout: ""
     }
   }
-  
+
   getPlatform(): string {
     return this.options.platform;
   }
-  
+
   getArch(): string {
     return this.options.arch;
   }
-  
+
   getVersion(): string {
     return this.options.version;
   }
-  
+
   getDownloadDir(): string {
     return this.options.downloadDir;
   }
-  
-  getDownloadLocation(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getArchiveName().then((archiveName) => {
-        let downloadDir: string = this.getDownloadDir();
-        let fullPath: string = path.resolve(downloadDir, archiveName);
-        this.debug(`getDownloadLocation(): ${fullPath}`);
-        resolve(fullPath);
+
+  async getDownloadLocation(): Promise<string> {
+    return path.resolve(this.getDownloadDir, this.getArchiveName);
+  }
+
+  async getExtractLocation(): Promise<string> {
+    let hash = await this.getMD5Hash();
+    let downloadDir: string = this.getDownloadDir();
+    let extractLocation: string = path.resolve(downloadDir, hash);
+    this.debug(`getExtractLocation(): ${extractLocation}`);
+    return extractLocation;
+  }
+
+  async getTempDownloadLocation(): Promise<string> {
+    return await this.getDownloadLocation() + '.downloading';
+  }
+
+  async downloadAndExtract(): Promise<string> {
+    await this.download();
+    return this.extract();
+  }
+
+  async extract(): Promise<string> {
+    let extractionLocation = await this.getExtractLocation();
+    if (await this.isExtractPresent()) {
+      return extractionLocation;
+    }
+
+    await decompress(
+      await this.getDownloadLocation(),
+      extractionLocation);
+
+    return extractionLocation;
+  }
+
+  async download(): Promise<string> {
+    const httpOptions = await this.getHttpOptions();
+    const downloadLocation = await this.getDownloadLocation();
+    const tempDownloadLocation = await this.getTempDownloadLocation();
+    const createDownloadDir = await this.createDownloadDir();
+
+    if (await this.isDownloadPresent()) {
+      return downloadLocation;
+    } else {
+      return await this.httpDownload(httpOptions, downloadLocation, tempDownloadLocation);
+    }
+  }
+
+
+  async isDownloadPresent(): Promise<void> {
+    let downloadLocation = await this.getDownloadLocation();
+    if (this.locationExists(downloadLocation)) {
+      let md5 = await this.getMD5Hash();
+      if (await md5File(downloadLocation) !== md5) {
+        throw ('MD5 signature does not match');
+      }
+    }
+  }
+
+  async md5File(path: string): Promise<string> {
+    let stream = createReadStream(path);
+    let buffer: Buffer;
+    let wstream = createWriteStream(buffer);
+    stream.pipe(createHash('md5')).pipe(wstream);
+    return buffer.toString();
+  }
+
+  async isExtractPresent(): Promise<boolean> {
+    return this.locationExists(await this.getExtractLocation());
+  }
+
+  async getMD5HashFileLocation(): Promise<string> {
+    return await this.getDownloadLocation() + '.md5';
+  }
+
+  async cacheMD5Hash(signature: string): Promise<void> {
+    return writeFileSync(await this.getMD5HashFileLocation(), signature);
+  }
+
+  async getMD5Hash(): Promise<string> {
+    try {
+      return await this.getMD5HashOffline();
+    } catch (error) {
+      return this.getMD5HashOnline();
+    }
+  }
+
+  async getMD5HashOnline(): Promise<string> {
+    let signatureContent = await request(await this.getDownloadURIMD5());
+    let signatureMatch: string[] = signatureContent.match(/(.*?)\s/);
+    let signature: string = signatureMatch[1];
+    await this.cacheMD5Hash(signature);
+    return signature;
+  }
+
+  async getMD5HashOffline(): Promise<string> {
+    return readFileSync(await this.getMD5HashFileLocation(), 'utf8');
+  }
+
+  async httpDownload(httpOptions: RequestOptions, downloadLocation: string, tempDownloadLocation: string): Promise<string> {
+    let fileStream = createWriteStream(tempDownloadLocation);
+
+    let request = get(httpOptions, (response: IncomingMessage) => {
+      this.downloadProgress.current = 0;
+      this.downloadProgress.length = parseInt(response.headers['content-length'], 10);
+      this.downloadProgress.total = Math.round(this.downloadProgress.length / 1048576 * 10) / 10;
+
+      response.pipe(fileStream);
+
+      fileStream.on('finish', () => {
+        fileStream.close();
+        renameSync(tempDownloadLocation, downloadLocation);
+        return downloadLocation;
       });
-    });
-  }
-  
-  getExtractLocation(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getMD5Hash().then((hash: string) => {
-        if (! hash) {
-          console.error("hash is not returned @ getExtractLocation()");
-          return reject();
-        }
-        let downloadDir: string = this.getDownloadDir();
-        let extractLocation: string = path.resolve(downloadDir, hash);
-        this.debug(`getExtractLocation(): ${extractLocation}`);
-        resolve(extractLocation);
-      }, (e) => {
-        console.error('hash is not returned @ getExtractLocation()', e);
-        reject();
+
+      response.on("data", (chunk: any) => {
+        this.printDownloadProgress(chunk);
       });
-    });
-  }
-  
-  getTempDownloadLocation(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getArchiveName().then((archiveName) => {
-        let downloadDir: string = this.getDownloadDir();
-        let fullPath: string = path.resolve(downloadDir, `${archiveName}.downloading`);
-        this.debug(`getTempDownloadLocation(): ${fullPath}`);
-        resolve(fullPath);
-      });
-    });
-  }
-  
-  downloadAndExtract(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.download().then((archive: string) => {
-        this.extract().then((extractLocation: string) => {
-          resolve(extractLocation);
-        });
-      })
-    });
-  }
-  
-  extract(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getExtractLocation().then((extractLocation: string) => {
-        this.isExtractPresent().then((extractPresent: boolean) => {
-          if ( extractPresent === true ) {
-            resolve(extractLocation);
-          } else {
-            this.getDownloadLocation().then((mongoDBArchive: string) => {
-              decompress(mongoDBArchive, extractLocation).then((files: any) => {
-                this.debug(`extract(): ${extractLocation}`);
-                resolve(extractLocation);
-              }, (e: any) => {
-                this.debug('extract() failed', extractLocation, e);
-              });
-            });  
-          }
-        });
-      })
-    });
-  }
-  
-  download(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      
-      let httpOptionsPromise: Promise<string> = this.getHttpOptions();
-      let downloadLocationPromise: Promise<string> = this.getDownloadLocation();
-      let tempDownloadLocationPromise: Promise<string> = this.getTempDownloadLocation();
-      let createDownloadDirPromise: Promise<boolean> = this.createDownloadDir();
-      
-      Promise.all([
-      httpOptionsPromise, 
-      downloadLocationPromise,
-      tempDownloadLocationPromise,
-      createDownloadDirPromise
-      ]).then(values => {
-        let httpOptions: any = values[0];
-        let downloadLocation: string = values[1];
-        let tempDownloadLocation: string = values[2];
-        let downloadDirRes: boolean = values[3];
-        
-        this.isDownloadPresent().then((isDownloadPresent: boolean) => {
-          if ( isDownloadPresent === true ) {
-            this.debug(`download(): ${downloadLocation}`);
-            resolve(downloadLocation);
-          } else {
-            this.httpDownload(httpOptions, downloadLocation, tempDownloadLocation).then((location: string) => {
-              this.debug(`download(): ${downloadLocation}`);
-              resolve(location);
-            }, (e) => {
-              reject(e);
-            })
-          }
-        });
-      });
-    });
-  }
-  
-  // TODO: needs refactoring
-  isDownloadPresent(): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
-      this.getDownloadLocation().then((downloadLocation: string) => {
-        if (this.locationExists(downloadLocation) === true ) {
-          this.getMD5Hash().then(downloadHash => {
-            md5File(downloadLocation, (err: any, hash: string) => {
-              if (err) {
-                throw err;
-              }
-              if ( hash === downloadHash ) {
-                this.debug(`isDownloadPresent() md5 match: true`);
-                resolve(true);
-              } else {
-                this.debug(`isDownloadPresent() md5 mismatch: false`);
-                resolve(false);
-              }
-            });
-          });
-        } else {
-          this.debug(`isDownloadPresent() location missing: false`);
-          resolve(false);
-        }
-      });
-    });
-  }
-  
-  isExtractPresent(): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
-      this.getMD5Hash().then(downloadHash => {
-        let downloadDir: string = this.getDownloadDir();
-        this.getExtractLocation().then((extractLocation: string) => {
-          let present: boolean = this.locationExists(extractLocation);
-          this.debug(`isExtractPresent(): ${present}`);
-          resolve(present);
-        });
+
+      request.on("error", (e: any) => {
+        throw e;
       });
     });
   }
 
- getMD5HashFileLocation(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getDownloadLocation().then((downloadLocation: string) => {
-        let md5HashLocation: string = `${downloadLocation}.md5`;
-        this.debug(`@getMD5HashFileLocation resolving md5HashLocation: ${md5HashLocation}`);
-        resolve(md5HashLocation);
-      }, (e) => {
-        console.error("error @ getMD5HashFileLocation", e);
-        reject(e);
-      });
-    });
-  }
-
-  cacheMD5Hash(signature: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      this.getMD5HashFileLocation().then((hashFile: string) => {
-        fs.outputFile(hashFile, signature, (err: any) => {
-          if ( err ) {
-            this.debug('@cacheMD5Hash unable to save signature', signature);
-            reject();
-          } else {
-            resolve();
-          }
-        });
-      });
-    });
-  }
-
-  getMD5Hash(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-        this.getMD5HashOffline().then((offlineSignature: string) => {
-          this.debug(`@getMD5Hash resolving offlineSignature ${offlineSignature}`);
-          resolve(offlineSignature);
-        }, (e: any) => {
-          this.getMD5HashOnline().then((onlineSignature: string) => {
-            this.debug(`@getMD5Hash resolving onlineSignature: ${onlineSignature}`);
-            resolve(onlineSignature);
-          }, (e: any) => {
-            console.error('unable to get signature content', e);
-            reject(e);
-          });
-        });
-    });
-  }
-
-  getMD5HashOnline(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getDownloadURIMD5().then((md5URL) => {
-        request(md5URL).then((signatureContent: string) => {
-          this.debug(`getDownloadMD5Hash content: ${signatureContent}`);
-          let signatureMatch: string[] = signatureContent.match(/(.*?)\s/);
-          let signature: string = signatureMatch[1];
-          this.debug(`getDownloadMD5Hash extracted signature: ${signature}`);
-          this.cacheMD5Hash(signature).then(() => {
-            resolve(signature);
-          }, (e: any) => {
-            this.debug('@getMD5HashOnline erorr', e);
-            reject();
-          });
-        }, (e: any) => {
-          console.error('unable to get signature content', e);
-          reject(e);
-        });
-      })
-    });
-  }
-
-  getMD5HashOffline(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.getMD5HashFileLocation().then((hashFile: string) => {
-        fs.readFile(hashFile, 'utf8', (err: any, signature: string) => {
-          if ( err ) {
-            this.debug('error @ getMD5HashOffline, unable to read hash content', hashFile);
-            reject();
-          } else {
-            resolve(signature);
-          }
-        });
-      });
-    });
-  }
-  
-  httpDownload(httpOptions: any, downloadLocation: string, tempDownloadLocation: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      let fileStream: any = fs.createWriteStream(tempDownloadLocation);
-      
-      let request: any = http.get(httpOptions, (response: any) => {
-        this.downloadProgress.current = 0;
-        this.downloadProgress.length = parseInt(response.headers['content-length'], 10);
-        this.downloadProgress.total = Math.round(this.downloadProgress.length / 1048576 * 10) / 10;
-        
-        response.pipe(fileStream);
-        
-        fileStream.on('finish', () => {
-          fileStream.close(() => {
-            fs.renameSync(tempDownloadLocation, downloadLocation);
-            this.debug(`renamed ${tempDownloadLocation} to ${downloadLocation}`);
-            resolve(downloadLocation);
-          });
-        });
-        
-        response.on("data", (chunk: any) => {
-          this.printDownloadProgress(chunk);
-        });
-        
-        request.on("error", (e: any) => {
-          this.debug("request error:", e);
-          reject(e);
-        });
-      });  
-    });
-  }
-  
   getCrReturn(): string {
     if (this.mongoDBPlatform.getPlatform() === "win32") {
       return "\x1b[0G";
     } else {
       return "\r";
-    }    
+    }
   }
-  
+
   locationExists(location: string): boolean {
     let exists: boolean;
     try {
@@ -356,47 +243,49 @@ export class MongoDBDownload {
     }
     return exists;
   }
-  
+
   printDownloadProgress(chunk: any): void {
     let crReturn: string = this.getCrReturn();
     this.downloadProgress.current += chunk.length;
     let percent_complete: number = Math.round(
-    100.0 * this.downloadProgress.current / this.downloadProgress.length * 10
-    ) / 10 ;
+      100.0 * this.downloadProgress.current / this.downloadProgress.length * 10
+    ) / 10;
     let mb_complete: number = Math.round(this.downloadProgress.current / 1048576 * 10) / 10;
-    let text_to_print: string = 
-    `Completed: ${percent_complete} % (${mb_complete}mb / ${this.downloadProgress.total}mb${crReturn}`;
+    let text_to_print: string =
+      `Completed: ${percent_complete} % (${mb_complete}mb / ${this.downloadProgress.total}mb${crReturn}`;
     if (this.downloadProgress.lastStdout !== text_to_print) {
       this.downloadProgress.lastStdout = text_to_print;
       process.stdout.write(text_to_print);
-    }    
+    }
   }
-  
-  
-  getHttpOptions(): Promise<any> {
-    return new Promise<string>((resolve, reject) => {
-      this.getDownloadURI().then((downloadURI) => {
-        this.options.http.protocol = downloadURI.protocol;
-        this.options.http.hostname = downloadURI.hostname;
-        this.options.http.path = downloadURI.path;
-        this.debug("getHttpOptions", this.options.http);
-        resolve(this.options.http);
-      });
-    });
+
+  async getHttpOptions(): Promise<RequestOptions> {
+    let url = await this.getDownloadURI();
+    if (process.env.HTTP_PROXY) {
+      let proxy = new URL(process.env.HTTP_PROXY);
+      return {
+        protocol: proxy.protocol,
+        port: proxy.port,
+        hostname: proxy.hostname,
+        method: 'CONNECT',
+        path: url.href
+      }
+    } else {
+      return {
+        protocol: url.protocol,
+        port: url.port,
+        hostname: url.hostname,
+        path: url.pathname + url.search + url.hash
+      }
+    }
   }
-  
-  getDownloadURI(): Promise<any> {
-    return new Promise<string>((resolve, reject) => {
-      let downloadURL: string = `${DOWNLOAD_URI}/${this.mongoDBPlatform.getPlatform()}`;
-      this.getArchiveName().then((archiveName) => {
-        downloadURL += `/${archiveName}`;
-        let downloadURLObject: any = url.parse(downloadURL);
-        this.debug(`getDownloadURI (url obj returned with href): ${downloadURLObject.href}`);
-        resolve(downloadURLObject);
-      });
-    });
+
+  async getDownloadURI(): Promise<URL> {
+    let url = DOWNLOAD_URI + '/' + this.mongoDBPlatform.getPlatform();
+    url += '/' + await this.getArchiveName();
+    return new URL(url);
   }
-  
+
   getDownloadURIMD5(): Promise<any> {
     return new Promise<string>((resolve, reject) => {
       this.getDownloadURI().then((downloadURI: any) => {
@@ -406,31 +295,31 @@ export class MongoDBDownload {
       })
     });
   }
-  
+
   createDownloadDir(): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
-        let dirToCreate: string = this.getDownloadDir();
-        this.debug(`createDownloadDir(): ${dirToCreate}`);
-        fs.ensureDir(dirToCreate, (err: any) => {
-          if ( err ) {
-            this.debug(`createDownloadDir() error: ${err}`);
-            throw err;
-          } else {
-            this.debug(`createDownloadDir(): true`);
-            resolve(true);
-          }
-        });
+      let dirToCreate: string = this.getDownloadDir();
+      this.debug(`createDownloadDir(): ${dirToCreate}`);
+      fs.ensureDir(dirToCreate, (err: any) => {
+        if (err) {
+          this.debug(`createDownloadDir() error: ${err}`);
+          throw err;
+        } else {
+          this.debug(`createDownloadDir(): true`);
+          resolve(true);
+        }
+      });
     });
   }
-  
-  
+
+
   getArchiveName(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       //var name = "mongodb-" + mongo_platform + "-" + mongo_arch;
-      let name = "mongodb-" + 
-      this.mongoDBPlatform.getPlatform() + "-" +
-      this.mongoDBPlatform.getArch();
-      
+      let name = "mongodb-" +
+        this.mongoDBPlatform.getPlatform() + "-" +
+        this.mongoDBPlatform.getArch();
+
       this.mongoDBPlatform.getOSVersionString().then(osString => {
         osString && (name += `-${osString}`);
       }, (error) => {
@@ -439,7 +328,7 @@ export class MongoDBDownload {
         name += `-${this.getVersion()}.${this.mongoDBPlatform.getArchiveType()}`;
         resolve(name);
       });
-    });  
+    });
   }
 }
 
@@ -448,48 +337,48 @@ export class MongoDBPlatform {
   platform: string;
   arch: string;
   debug: any;
-  
+
   constructor(platform: string, arch: string) {
     this.debug = Debug('mongodb-download-MongoDBPlatform');
     this.platform = this.translatePlatform(platform);
     this.arch = this.translateArch(arch, this.getPlatform());
   }
-  
+
   getPlatform(): string {
     return this.platform;
   }
-  
+
   getArch(): string {
     return this.arch;
   }
-  
+
   getArchiveType(): string {
-    if ( this.getPlatform() === "win32" ) {
+    if (this.getPlatform() === "win32") {
       return "zip";
     } else {
       return "tgz";
     }
   }
-  
+
   getCommonReleaseString(): string {
     let name: string = `mongodb-${this.getPlatform()}-${this.getArch()}`;
     return name;
   }
-  
+
   getOSVersionString(): Promise<string> {
-    if ( this.getPlatform() === "linux" && this.getArch() !== "i686") {
+    if (this.getPlatform() === "linux" && this.getArch() !== "i686") {
       return this.getLinuxOSVersionString();
     } else {
       return this.getOtherOSVersionString();
     }
   }
-  
+
   getOtherOSVersionString(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       reject("");
     });
   }
-  
+
   getLinuxOSVersionString(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       getos((e: any, os: any) => {
@@ -507,9 +396,9 @@ export class MongoDBPlatform {
           resolve(this.getDebianVersionString(os));
         } else {
           reject("");
-        }  
+        }
       });
-    });    
+    });
   }
 
   getDebianVersionString(os: any): string {
@@ -524,7 +413,7 @@ export class MongoDBPlatform {
     }
     return name;
   }
-  
+
   getFedoraVersionString(os: any): string {
     let name: string = "rhel";
     let fedora_version: number = parseInt(os.release);
@@ -539,7 +428,7 @@ export class MongoDBPlatform {
     }
     return name;
   }
-  
+
   getRhelVersionString(os: any): string {
     let name: string = "rhel";
     if (/^7/.test(os.release)) {
@@ -553,12 +442,12 @@ export class MongoDBPlatform {
     }
     return name;
   }
-  
+
   getElementaryOSVersionString(os: any): string {
     let name: string = "ubuntu1404";
     return name;
   }
-  
+
   getSuseVersionString(os: any): string {
     let [release]: [string | null] = os.release.match(/(^11|^12)/) || [null];
 
@@ -569,7 +458,7 @@ export class MongoDBPlatform {
       return '';
     }
   }
-  
+
   getUbuntuVersionString(os: any): string {
     let name: string = "ubuntu";
     let ubuntu_version: string[] = os.release ? os.release.split('.') : '';
@@ -597,26 +486,25 @@ export class MongoDBPlatform {
     }
     return name;
   }
-  
-  
+
+
   translatePlatform(platform: string): string {
-    switch (platform) {
-      case "darwin":
-      return "osx";
-      case "win32":
-      return "win32";
-      case "linux":
-      return "linux";
-      case "elementary OS": //os.platform() doesn't return linux for elementary OS.
-      return "linux";
-      case "sunos":
-      return "sunos5";
-      default:
+    const platforms: { [key: string]: string } = {
+      "darwin": "osx",
+      "win32": "win32",
+      "linux": "linux",
+      "elementary OS": "linux", //os.platform() doesn't return linux for elementary OS.
+      "sunos": "sunos5"
+    }
+
+    if (!platforms[platform]) {
       this.debug("unsupported platform %s by MongoDB", platform);
       throw new Error(`unsupported OS ${platform}`);
     }
+
+    return platforms[platform];
   }
-  
+
   translateArch(arch: string, mongoPlatform: string): string {
     if (arch === "ia32") {
       if (mongoPlatform === "linux") {
@@ -634,5 +522,5 @@ export class MongoDBPlatform {
       throw new Error("unsupported architecture, ia32 and x64 are the only valid options");
     }
   }
-  
+
 }

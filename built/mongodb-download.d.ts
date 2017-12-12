@@ -1,9 +1,12 @@
+/// <reference types="node" />
+import { URL } from 'url';
+import { RequestOptions } from 'http';
 export interface IMongoDBDownloadOptions {
     platform: string;
     arch: string;
     version: string;
     downloadDir: string;
-    http: any;
+    url: URL;
 }
 export interface IMongoDBDownloadProgress {
     current: number;
@@ -16,13 +19,7 @@ export declare class MongoDBDownload {
     mongoDBPlatform: MongoDBPlatform;
     downloadProgress: IMongoDBDownloadProgress;
     debug: any;
-    constructor({platform, arch, downloadDir, version, http}: {
-        platform?: any;
-        arch?: any;
-        downloadDir?: any;
-        version?: string;
-        http?: {};
-    });
+    constructor(options?: IMongoDBDownloadOptions);
     getPlatform(): string;
     getArch(): string;
     getVersion(): string;
@@ -33,19 +30,20 @@ export declare class MongoDBDownload {
     downloadAndExtract(): Promise<string>;
     extract(): Promise<string>;
     download(): Promise<string>;
-    isDownloadPresent(): Promise<boolean>;
+    isDownloadPresent(): Promise<void>;
+    md5File(path: string): Promise<string>;
     isExtractPresent(): Promise<boolean>;
     getMD5HashFileLocation(): Promise<string>;
     cacheMD5Hash(signature: string): Promise<void>;
     getMD5Hash(): Promise<string>;
     getMD5HashOnline(): Promise<string>;
     getMD5HashOffline(): Promise<string>;
-    httpDownload(httpOptions: any, downloadLocation: string, tempDownloadLocation: string): Promise<string>;
+    httpDownload(httpOptions: RequestOptions, downloadLocation: string, tempDownloadLocation: string): Promise<string>;
     getCrReturn(): string;
     locationExists(location: string): boolean;
     printDownloadProgress(chunk: any): void;
-    getHttpOptions(): Promise<any>;
-    getDownloadURI(): Promise<any>;
+    getHttpOptions(): Promise<RequestOptions>;
+    getDownloadURI(): Promise<URL>;
     getDownloadURIMD5(): Promise<any>;
     createDownloadDir(): Promise<boolean>;
     getArchiveName(): Promise<string>;
