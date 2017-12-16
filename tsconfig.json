@@ -1,21 +1,17 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "es6",
     "module": "commonjs",
-    "noImplicitAny": true,
-    "strictNullChecks": false,
-    "removeComments": false,
-    "preserveConstEnums": true,
-    "declaration": true,
-    "sourceMap": true,
-    "noLib": false,
+    "declaration": false,
     "outDir": "./built",
     "types": ["node"],
+    "sourceMap": true,
     "typeRoots": ["node_modules/@types"],
     "lib": ["es6"]
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "test/**/*"
   ],
   "exclude": [
     "node_modules",
