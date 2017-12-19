@@ -4,4 +4,5 @@ node_modules
 *.swp
 *.swo
 
-.vscode/
+.vscode/settings.json
+.env
