@@ -1,51 +1,65 @@
 {
   "name": "mongodb-download",
-  "version": "2.2.4",
-  "description": "download mongodb prebuilt packages from mongodb",
-  "main": "built/mongodb-download.js",
-  "bin": "built/mongodb-download-cli.js",
-  "types": "built/mongodb-download.d.ts",
+  "version": "1.0.0",
+  "description": "download mongodb prebuilt packages from mongodb.org",
+  "main": "lib/index.js",
+  "bin": {
+    "mongodb-download": "lib/cli.js"
+  },
   "scripts": {
-    "test": "mocha"
+    "lint": "eslint lib test",
+    "unit-tests": "tape test/*.js",
+    "test": "npm run unit-tests && npm run lint"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/s73obrien/mongodb-download.git"
   },
-  "keywords": [
-    "mongodb",
-    "download"
+  "authors": [
+    "Sean O'Brien <s73obrien@hotmail.com>"
   ],
-  "author": "Roman Jurkov <winfinit@gmail.com>",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/s73obrien/mongodb-download/issues"
   },
+  "homepage": "https://github.com/s73obrien/mongodb-download#readme",
   "dependencies": {
-    "@types/progress": "^2.0.0",
-    "debug": "^2.2.0",
-    "decompress": "^4.0.0",
-    "fs-extra": "^2.0.0",
-    "getos": "^2.7.0",
-    "md5-file": "3.1.1",
-    "prettysize": "^1.1.0",
-    "progress": "^2.0.0",
-    "request": "^2.83.0",
-    "request-promise": "^4.1.1",
-    "yargs": "^3.26.0"
+    "debug": "^3.0.0",
+    "env-paths": "^1.0.0",
+    "fs-extra": "^4.0.1",
+    "minimist": "^1.2.0",
+    "nugget": "^2.0.1",
+    "path-exists": "^3.0.0",
+    "rc": "^1.2.1",
+    "semver": "^5.4.1",
+    "sumchecker": "^2.0.2"
   },
   "devDependencies": {
-    "@types/getos": "^3.0.0",
-    "@types/node": "^8.0.58",
-    "@types/request": "^2.0.9",
-    "@types/request-promise-native": "^1.0.10",
-    "@types/tar": "^4.0.0",
-    "chai": "^3.5.0",
-    "mocha": "^3.2.0",
-    "request-promise-native": "^1.0.5",
-    "tar": "^4.1.1",
-    "ts-node": "^4.0.2",
-    "typescript": "^2.6.2"
+    "eslint": "^4.4.1",
+    "eslint-config-standard": "^10.2.1",
+    "eslint-plugin-import": "^2.7.0",
+    "eslint-plugin-node": "^5.1.1",
+    "eslint-plugin-promise": "^3.5.0",
+    "eslint-plugin-standard": "^3.0.1",
+    "tape": "^4.8.0",
+    "temp": "^0.8.3"
   },
-  "homepage": "https://github.com/s73obrien/mongodb-download#readme"
+  "eslintConfig": {
+    "extends": "standard",
+    "parserOptions": {
+      "sourceType": "script"
+    },
+    "rules": {
+      "strict": [
+        "error"
+      ],
+      "prefer-const": [
+        "error"
+      ]
+    }
+  },
+  "keywords": [],
+  "engines": {
+    "node": ">= 4.0"
+  }
 }

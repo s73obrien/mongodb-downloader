@@ -33,26 +33,25 @@ export default class MongoDBDownload {
   private archiveHost: string = 'fastdl.mongodb.org';
 
   public async install(): Promise<WriteStream> {
-    var progress: ProgressBar;
     return get({ url: this.downloadURL, gzip: true })
       .on('error', er => {
         throw er;
       })
       .on('response', response => {
-        progress = new ProgressBar(
-          '|:bar| :percent | ETA: :etas', {
+        let progress = new ProgressBar(
+          '|:bar| :percent | ETA: :etas |', {
             complete: '=',
             incomplete: ' ',
             width: 40,
             total: parseInt(response.headers['content-length'], 10)
-        })
+          })
         progress.interrupt('Downloading ' + this.archive.name);
+
         response.on('data', data => {
           progress.tick(data.length);
         })
       })
       .on('complete', (response) => {
-        progress.interrupt('Verifying integrity of ' + this.archive.name);
         get({ url: this.downloadURL + '.md5', gzip: true }).then(sig => {
           this.archive.verify(sig.split(' ')[0]).then(valid => {
             if (valid) {

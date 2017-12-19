@@ -1,5 +1,9 @@
 import * as getos from 'getos';
-import { extract } from 'tar';
+const decompress = require('decompress');
+const decompressUnzip = require('decompress-unzip');
+const decompressTar = require('decompress-tar');
+
+import * as ProgressBar from 'progress';
 
 import {
   tmpdir
@@ -17,7 +21,8 @@ import {
 import {
   createReadStream,
   mkdirSync,
-  mkdir
+  mkdir,
+  stat
 } from 'fs';
 
 export class MongoDBArchive {
@@ -79,29 +84,42 @@ export class MongoDBArchive {
 
     // Create extract directory
     mkdir(this.extractDirectory, (err: NodeJS.ErrnoException) => {
-      
-    });
+      // ignore error if it is an already exists error
+      if (err) {
+        if (err.code !== 'EEXIST')
+          throw err;
+      }
 
-    // Extract into extract directory
-    return extract({
-      file: this.downloadPath,
-      cwd: this.extractDirectory
-    })
+      // Extract into extract directory
+      return decompress(this.downloadPath, this.extractDirectory);
+    });
   }
 
   public async verify(signature: string): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
       // Verifies that archive was downloaded correctly
       // compare md5 of archive to retrieved md5
-      let hasher = createHash('md5');
-      let stream = createReadStream(this.downloadPath);
-      stream.on('end', () => {
-        let archiveSignature = hasher.digest().toString('hex');
-        resolve (archiveSignature === signature);
-      })
+      stat(this.downloadPath, (err, stat) => {
+        let hasher = createHash('md5');
+        let stream = createReadStream(this.downloadPath);
+        stream.on('end', () => {
+          let archiveSignature = hasher.digest().toString('hex');
+          resolve(archiveSignature === signature);
+        })
 
-      stream.on('data', data => {
-        hasher.update(data);
+        let progress = new ProgressBar(
+          '|:bar| :percent | ETA: :etas |', {
+            complete: '=',
+            incomplete: ' ',
+            width: 40,
+            total: stat.size
+          })
+
+        progress.interrupt("Verifying contents of " + this.downloadPath);
+        stream.on('data', data => {
+          progress.tick(data.length);
+          hasher.update(data);
+        })
       })
     });
 
